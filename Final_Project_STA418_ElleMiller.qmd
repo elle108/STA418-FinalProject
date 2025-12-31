@@ -1,0 +1,591 @@
+---
+title: "Income and Inflation Trends in Michigan Counties"
+author: "Elle Miller"
+date: today
+format:
+  html:
+    theme: flatly
+    self-contained: true
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+error: true
+warning: false
+message: false
+---
+
+# Data Dictionary
+
+**Census Data (Michigan Counties 2009-2023):**
+
+- `geoid` (character): Geographic region ID - first 2 digits are state FIPS code, last 3 digits are county FIPS code
+- `county_state` (character): County name and state
+- `year` (numeric): Year of data collection
+- `population` (numeric): Total population count
+- `median_income` (numeric): Median household income in dollars
+- `median_monthly_rent_cost` (numeric): Median monthly rent for renters in dollars
+- `median_monthly_home_cost` (numeric): Median monthly housing costs for homeowners in dollars
+- `prop_female` (numeric): Proportion of population that is female (0-1 scale)
+- `prop_poverty` (numeric): Proportion of population 25+ living below poverty threshold (0-1 scale)
+
+**CPI Data (2000-2024):**
+
+- `year` (numeric): Year of observation
+- `period` (character): Period code (e.g., M12 for December)
+- `period_name` (character): Month name
+- `series_id` (character): Series identifier
+- `date` (date): Full date of observation
+- `cpi` (numeric): Consumer Price Index value (measures inflation)
+
+# Data Cleaning
+
+```{r}
+# Load libraries
+library(tidyverse)
+library(lubridate)
+library(flextable)
+library(naniar)
+library(skimr)
+```
+
+```{r}
+# Load census data
+census <- read_csv("https://raw.githubusercontent.com/dilernia/STA418-518/main/Data/census_data_county_2009-2023.csv")
+
+# Load CPI data
+cpi <- read_csv("https://raw.githubusercontent.com/dilernia/STA418-518/refs/heads/main/Data/cpi_2000-2024.csv")
+
+# Filter to Michigan counties
+michigan_census <- census |>
+  filter(geoid >= 26000 & geoid < 27000) |>
+  mutate(geoid = as.character(geoid))
+```
+
+## Merging data sets
+
+```{r}
+# Get annual average CPI for each year
+cpi_annual <- cpi |>
+  group_by(year) |>
+  summarize(avg_cpi = mean(cpi, na.rm = TRUE))
+
+# Join census data with CPI data
+michigan_with_cpi <- michigan_census |>
+  left_join(cpi_annual, by = "year")
+```
+
+## String manipulation
+
+```{r}
+michigan_with_cpi <- michigan_with_cpi |>
+  mutate(
+    # Extract county name without state
+    county_name = str_remove(county_state, ", Michigan"),
+    
+    # Convert to title case
+    county_clean = str_to_title(county_name),
+    
+    # Remove County if present
+    county_short = str_remove(county_clean, " County$"),
+    
+    # Create geographic regions based on county names
+    region = case_when(
+      str_detect(county_short, "^(Wayne|Oakland|Macomb)$") ~ "Metro Detroit",
+      str_detect(county_short, "^(Kent|Ottawa|Allegan|Barry)$") ~ "West Michigan",
+      str_detect(county_short, "^(Washtenaw|Livingston|Lenawee|Monroe)$") ~ "Southeast Michigan",
+      str_detect(county_short, "^(Ingham|Eaton|Clinton)$") ~ "Mid Michigan",
+      str_detect(county_short, "^(Marquette|Houghton|Keweenaw|Ontonagon|Gogebic|Iron|Baraga|Dickinson|Menominee|Delta|Alger|Schoolcraft|Luce|Chippewa|Mackinac)$") ~ "Upper Peninsula",
+      TRUE ~ "Northern & Rural Michigan"
+    )
+  )
+```
+
+## Date time functions
+
+```{r}
+michigan_with_cpi <- michigan_with_cpi |>
+  mutate(
+    # Create date from year (1,1 for January 1st start)
+    date_reference = make_date(year, 1, 1),
+    
+    # Calculate years since start of dataset
+    years_since_start = interval(make_date(2009, 1, 1), date_reference) / years(1),
+    
+    # Identify pre-pandemic vs post-pandemic periods
+    pandemic_period = case_when(
+      year < 2020 ~ "Pre-Pandemic (2009-2019)",
+      year == 2020 ~ "Pandemic Year (2020)",
+      TRUE ~ "Post-Pandemic (2021-2023)"
+    )
+  )
+```
+
+# Exploratory Data Analysis
+
+```{r}
+# Michigan Census data missingness
+gg_miss_var(michigan_census, show_pct = TRUE) +
+  theme(axis.text = element_text(size = 4))
+```
+
+```{r}
+# CPI data missingness
+gg_miss_var(cpi, show_pct = TRUE) +
+  theme(axis.text = element_text(size = 4))
+```
+
+**Missingness Analysis:** The dataset has seemingly no missing values. However, the year 2020 is completely absent because the Census Bureau did not collect this data during this time period. Yet, missing values are minimal and won't affect the analysis.
+
+## Tables of summary statistics
+
+```{r}
+# Summary statistics by region
+regional_summary <- michigan_with_cpi |>
+  group_by(region) |>
+  summarize(
+    avg_income = round(mean(median_income, na.rm = TRUE), digits = 2),
+    avg_poverty_pct = round(mean(prop_poverty * 100, na.rm = TRUE), digits = 2),
+    avg_population = round(mean(population, na.rm = TRUE), digits = 2)
+  ) |>
+  arrange(desc(avg_income))
+  
+  regional_summary |>
+    flextable() |>
+    set_header_labels(region = "Region",
+    avg_income = "Median Income ($)",
+    avg_poverty_pct = "Poverty Rate (%)",
+    avg_population = "Average Population") |>
+    theme_zebra()
+```
+**Regional Statistics Analysis:** Income levels vary substantially across Michigan’s regions. Southeast and West Michigan consistently report the highest median incomes. Poverty rates are generally lowest in these same regions, while Northern & Rural areas and the Upper Peninsula show lower incomes and higher poverty.
+
+```{r}
+# Get values for specific years
+year_2009 <- michigan_with_cpi |>
+  filter(year == 2009) |>
+  summarize(
+    avg_income = round(mean(median_income, na.rm = TRUE), digits = 2),
+    avg_cpi = round(mean(avg_cpi, na.rm = TRUE), digits = 2),
+    avg_poverty = round(mean(prop_poverty * 100, na.rm = TRUE), digits = 2)
+  )
+
+year_2015 <- michigan_with_cpi |>
+  filter(year == 2015) |>
+  summarize(
+    avg_income = round(mean(median_income, na.rm = TRUE), digits = 2),
+    avg_cpi = round(mean(avg_cpi, na.rm = TRUE), digits = 2),
+    avg_poverty = round(mean(prop_poverty * 100, na.rm = TRUE), digits = 2)
+  )
+
+year_2023 <- michigan_with_cpi |>
+  filter(year == 2023) |>
+  summarize(
+    avg_income = round(mean(median_income, na.rm = TRUE), digits = 2),
+    avg_cpi = round(mean(avg_cpi, na.rm = TRUE), digits = 2),
+    avg_poverty = round(mean(prop_poverty * 100, na.rm = TRUE), digits = 2)
+  )
+
+# Calculate changes
+growth_comparison <- tibble(
+  year = c(2015, 2023),
+  avg_income = c(year_2015$avg_income, year_2023$avg_income),
+  avg_cpi = c(year_2015$avg_cpi, year_2023$avg_cpi),
+  avg_poverty = c(year_2015$avg_poverty, year_2023$avg_poverty),
+  income_change = round(c(
+    ((year_2015$avg_income / year_2009$avg_income) - 1) * 100,
+    ((year_2023$avg_income / year_2015$avg_income) - 1) * 100
+  ), digits = 2),
+  inflation = round(c(
+    ((year_2015$avg_cpi / year_2009$avg_cpi) - 1) * 100,
+    ((year_2023$avg_cpi / year_2015$avg_cpi) - 1) * 100
+  ), digits = 2)
+)
+
+growth_comparison |>
+  flextable() |>
+  set_header_labels(
+    year = "Year",
+    avg_income = "Avg Income ($)",
+    avg_cpi = "CPI",
+    avg_poverty = "Poverty Rate (%)",
+    income_change = "Income Growth (%)",
+    inflation = "Inflation (%)"
+  ) |>
+  theme_zebra()
+```
+
+**Income and CPI Changes Analysis:** From 2009 to 2015, Michigan incomes grew slightly, while inflation rose at a slower, steady pace. From 2015 to 2023, income growth accelerated sharply (over 44%) but inflation also surged significantly.
+
+```{r}
+# Compare before COVID (2009-2019) to after COVID (2021-2023)
+
+# Calculate averages for before COVID
+before_covid <- michigan_with_cpi |>
+  filter(year < 2020) |>
+  group_by(region) |>
+  summarize(
+    income_before = round(mean(median_income, na.rm = TRUE), digits = 2),
+    poverty_before = round(mean(prop_poverty * 100, na.rm = TRUE), digits = 2)
+  )
+
+# Calculate averages for after COVID
+after_covid <- michigan_with_cpi |>
+  filter(year > 2020) |>
+  group_by(region) |>
+  summarize(
+    income_after = round(mean(median_income, na.rm = TRUE), digits = 2),
+    poverty_after = round(mean(prop_poverty * 100, na.rm = TRUE), digits = 2)
+  )
+
+# Join the two tables and calculate changes
+pandemic_comparison <- before_covid |>
+  left_join(after_covid, by = "region") |>
+  mutate(
+    income_change = round(((income_after / income_before) - 1) * 100, digits = 2),
+    poverty_change = round((poverty_after - poverty_before), digits = 2)
+  ) |>
+  arrange(desc(income_change))
+
+# Display table
+pandemic_comparison |>
+  flextable() |>
+  set_header_labels(
+    region = "Region",
+    income_before = "Income Before COVID ($)",
+    income_after = "Income After COVID ($)",
+    income_change = "Income Change (%)",
+    poverty_before = "Poverty Before COVID (%)",
+    poverty_after = "Poverty After COVID (%)",
+    poverty_change = "Poverty Change"
+  ) |>
+  theme_vanilla()
+```
+
+**Pre-Pandemic vs Post-Pandemic Analysis: Median income is noticeably higher and poverty rates declines in the post pandemic years compared to the pre pandemic period. This indicates that many households have experienced improvement in financial stability since 2020.**
+
+## Data visualizations
+
+### Average Median Income Trends
+
+```{r}
+michigan_with_cpi |>
+  group_by(year) |>
+  summarize(avg_median_income = mean(median_income, na.rm = TRUE)) |>
+  ggplot(aes(x = year, y = avg_median_income)) +
+  geom_line(color = "#E66100", linewidth = 1.5) +
+  geom_point(color = "#E66100", size = 4) +
+  labs(
+    title = "Average Median Income Trends in Michigan Counties",
+    x = "Year",
+    y = "Average Median Income",
+    caption = "Source: U.S. Census Bureau and Bureau of Labor Statistics."
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 10)
+  )
+```
+
+**Average Income Analysis:** Median income steadily increases from 2009 to 2023, with a sharper rise beginning around 2015 and an even more noticeable jump after 2020. This indicates strong income growth over time, especially in the post pandemic years. 
+
+### Top 10 Counties by Income
+
+```{r}
+# Bar chart of top counties by income
+michigan_with_cpi |>
+  filter(year == 2023) |>
+  arrange(desc(median_income)) |>
+  slice_head(n = 10) |>
+  ggplot(aes(x = reorder(county_clean, median_income), y = median_income)) +
+  geom_col(fill = "#5D3A9B") +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Top 10 Michigan Counties by Median Household Income",
+    x = NULL,
+    y = "Median Household Income",
+    caption = "Source: U.S. Census Bureau and Bureau of Labor Statistics."
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 10)
+  )
+```
+
+**Top 10 Incomes Analysis:** Counties with the highest median incomes show a consistent pattern of stronger economies and higher wage levels. These counties tend to be suburban or urban areas with higher populations.
+
+### Income vs Poverty
+
+```{r}
+# Scatter plot of income vs poverty
+michigan_with_cpi |>
+  filter(year == 2023) |>
+  ggplot(aes(x = median_income, y = prop_poverty * 100)) +
+  geom_point(aes(size = population), color = "#5D3A9B") +
+  geom_smooth(color = "#E66100", linetype = "dashed") +
+  labs(
+    title = "Relationship Between Income and Poverty in Michigan Counties",
+    x = "Median Household Income",
+    y = "Poverty Rate (%)",
+    size = "Population",
+    caption = "Source: U.S. Census Bureau and Bureau of Labor Statistics."
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+```
+
+**Income vs Poverty Analysis:** The regression line slopes downward, showing a negative relationship between income and poverty. Counties with higher incomes generally have lower poverty rates, confirming income as a strong predictor of well being.
+
+### Distribution of Rent Costs
+
+```{r}
+# Histogram of rent costs
+michigan_with_cpi |>
+  filter(year == 2023) |>
+  ggplot(aes(x = median_monthly_rent_cost)) +
+  geom_histogram(fill = "#E66100", color = "white") +
+  labs(
+    title = "Distribution of Median Monthly Rent Costs Across Michigan Counties",
+    x = "Median Monthly Rent Cost",
+    y = "Number of Counties",
+    caption = "Source: U.S. Census Bureau and Bureau of Labor Statistics."
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14)
+  )
+```
+
+**Rent Costs Analysis:** Rent prices in 2023 cluster around a central range, with a slightly right skewed distribution. This means a small number of counties have much higher housing costs and most counties have housing costs int the range of $750-$950. 
+
+### CPI Over Time
+
+```{r}
+# Show how inflation changed over time
+michigan_with_cpi |>
+  group_by(year) |>
+  summarize(avg_cpi = mean(avg_cpi, na.rm = TRUE)) |>
+  ggplot(aes(x = year, y = avg_cpi)) +
+  geom_line(color = "#E66100", linewidth = 1.5) +
+  geom_point(color = "#E66100", size = 4) +
+  labs(
+    title = "Consumer Price Index (CPI) Over Time",
+    x = "Year",
+    y = "CPI Value",
+    caption = "Source: U.S. Census Bureau and Bureau of Labor Statistics."
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14)
+  )
+```
+
+**CPI Analysis:** CPI gradually rises across all years but spikes sharply after 2020. This shows that Michigan households faced significantly higher living costs in the post pandemic period.
+
+### Income Growth vs Inflation by Year
+
+```{r}
+# Calculate year-to-year changes
+michigan_with_cpi |>
+  group_by(year) |>
+  summarize(
+    avg_income = mean(median_income, na.rm = TRUE),
+    avg_cpi = mean(avg_cpi, na.rm = TRUE)
+  ) |>
+  arrange(year) |>
+  mutate(
+    income_growth = ((avg_income / lag(avg_income)) - 1) * 100,
+    inflation_rate = ((avg_cpi / lag(avg_cpi)) - 1) * 100
+  ) |>
+  filter(!is.na(income_growth)) |>
+  ggplot(aes(x = year)) +
+  geom_col(aes(y = income_growth, fill = "Income Growth"), width = 0.4) +
+  geom_col(aes(y = inflation_rate, fill = "Inflation Rate"), width = 0.4) +
+  scale_fill_manual(values = c("Income Growth" = "#5D3A9B", 
+                                "Inflation Rate" = "#E66100")) +
+  labs(
+    title = "Yearly Income Growth vs Inflation Rate",
+    x = "Year",
+    y = "Percent Change from Previous Year (%)",,
+    caption = "Source: U.S. Census Bureau and Bureau of Labor Statistics.",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold", size = 14))
+```
+
+**Income vs Inflation Growth Analysis:** Income growth generally outpaced inflation before 2020. After the pandemic, inflation rates increased sharply and often surpassed income growth, reducing purchasing power even as nominal wages rose.
+
+# Permutation or Randomization Test
+
+## Research Question
+
+Did poverty rates significantly decrease from 2009 to 2023 in Michigan counties?
+
+### Hypotheses
+
+**Formal statement of hypotheses**
+
+Hypotheses are given by:
+
+$$H_0: \mu_{2009} = \mu_{2023}$$
+$$H_1: \mu_{2009} > \mu_{2023}$$
+
+where $\mu_{2009}$ is the average poverty rate in 2009 and $\mu_{2023}$ is the average poverty rate in 2023.
+
+```{r}
+# Get data for just 2009 and 2023
+test_data <- michigan_with_cpi |>
+  filter(year %in% c(2009, 2023)) |>
+  mutate(year_group = as.character(year))
+
+# Boxplot comparison
+test_data |>
+  ggplot(aes(x = year_group, y = prop_poverty * 100, fill = year_group)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("#5D3A9B", "#E66100")) +
+  labs(
+    title = "Poverty Rate Comparison: 2009 vs 2023",
+    x = "Year",
+    y = "Poverty Rate (%)",
+    caption = "Source: U.S. Census Bureau and Bureau of Labor Statistics."
+  ) +
+  theme_bw() +
+  theme(legend.position = "none", plot.title = element_text(face = "bold"))
+```
+
+```{r}
+# Summary statistics
+test_data |>
+  group_by(year_group) |>
+  summarize(
+    n = n(),
+    Mean = round(mean(prop_poverty * 100, na.rm = TRUE), digits = 2),
+    SD = round(sd(prop_poverty * 100, na.rm = TRUE), digits = 2)
+  ) |>
+  flextable() |>
+    set_header_labels(year_group = "Year",
+    n = "Counties",
+    Mean = "Mean",
+    SD = "SD") |>
+  theme_zebra()
+```
+
+### Running the Permutation Test
+```{r}
+# Calculate observed difference (2009 - 2023)
+observed_diff <- test_data |>
+  group_by(year_group) |>
+  summarize(mean_poverty = mean(prop_poverty * 100, na.rm = TRUE)) |>
+  summarize(diff = first(mean_poverty) - last(mean_poverty)) |>
+  pull(diff)
+
+# Run permutation test
+n_permutations <- 10000
+permutation_diffs <- vector(length = n_permutations)
+
+for(i in 1:n_permutations) {
+  permutation_diffs[i] <- test_data |>
+    mutate(year_group = sample(year_group)) |>
+    group_by(year_group) |>
+    summarize(mean_poverty = mean(prop_poverty * 100, na.rm = TRUE)) |>
+    summarize(diff = first(mean_poverty) - last(mean_poverty)) |>
+    pull(diff)
+}
+
+# Calculate p-value (one-tailed test)
+p_value <- mean(permutation_diffs >= observed_diff)
+```
+
+
+```{r}
+# Permutation Test Results
+
+# Plot null distribution
+tibble(diff = permutation_diffs) |>
+  ggplot(aes(x = diff)) +
+  geom_histogram(bins = 50, fill = "#5D3A9B", color = "white") +
+  geom_vline(xintercept = observed_diff, color = "#E66100", 
+             linewidth = 1.5, linetype = "dashed") +
+  labs(
+    title = "Permutation Test Null Distribution",
+    subtitle = paste("Observed difference:", round(observed_diff, 2), 
+                        "p-value:", round(p_value, 2)),
+    x = "Difference in Mean Poverty Rate (2009 - 2023)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+**Null Distribution Analysis:** The observed difference is larger than nearly all values generated under the null distribution, so the p-value is extremely small. This provides strong evidence that poverty rates in Michigan counties were lower in 2023 than in 2009.
+
+### Interpretation
+
+**Decision:** We reject the null hypothesis.
+
+**Interpretation:** Michigan counties experienced a statistically significant decrease in poverty rates from 2009 to 2023.
+
+# Conclusions
+
+This project looked at how income and poverty changed in Michigan counties from 2009 to 2023, and compared these changes to national inflation rates.
+
+### Incomes Grew Faster Than Inflation
+
+From 2009 to 2023, the average median income in Michigan counties increased from about $45,000 to $63,000, a 40% increase. During the same time, inflation went up 35%. This means people's incomes grew slightly faster than prices, so Michigan residents gained some purchasing power. However, most of this real improvement happened before 2019. From 2019 to 2023, both incomes and prices rose quickly, so the gains weren't as large as they might seem.
+
+### Poverty Rates Went Down Significantly
+
+The statistical test showed strong evidence that poverty rates decreased in Michigan counties. In 2009, about 16% of people lived in poverty. By 2023, this dropped to about 12%. That's a 4 percentage point improvement. Every region of Michigan saw poverty rates decline, which is encouraging. However, around 1 in 8 Michigan residents still lives in poverty, showing there's still work to be done.
+
+### Different Regions Have Very Different Incomes
+
+Southeast Michigan (especially counties like Livingston, Oakland, and Washtenaw) has the highest incomes and lowest poverty rates. West Michigan also does well. The Upper Peninsula and Northern/Rural Michigan have much lower incomes and higher poverty rates. Metro Detroit is interesting as it has moderate income levels but high poverty, which suggests there's a big gap between wealthy and poor residents in that area. These regional differences stayed pretty consistent over the 14 years studied.
+
+### Higher Income Counties Have Lower Poverty
+
+Counties with higher median incomes have lower poverty rates. This was not surprising since, typically, when an area has well paying jobs, fewer people live in poverty. However, income isn't the only factor. Some counties with similar incomes have different poverty rates, which means other things like cost of living and available services also matter.
+
+### Housing Costs Are Still Affordable in Most Areas
+
+Most Michigan counties have median rents between $700 and $900 per month, which is relatively affordable. However, the wealthiest counties (especially near Detroit and Ann Arbor) have rents over $1,000 per month. This can make it hard for people with lower incomes to afford housing in areas with the best job opportunities.
+
+### Recent Years Showed Big Changes
+
+Comparing before the pandemic (2009-2019) to after (2021-2023), incomes increased 30-47% across all regions. Poverty rates also dropped in every region. The Upper Peninsula had the biggest income increase at 47%. While these numbers look impressive, we have to remember that prices also went up a lot during this time, especially during and after the pandemic.
+
+## What This Data Doesn't Tell Us
+
+My analysis has some limitations. The year 2020 is completely missing from the census data, so we can't see exactly what happened during the worst part of the pandemic. I only examined income and rent costs, not other important expenses like healthcare, childcare, or food. Finally, my analysis looked at entire counties, which can hide differences between cities and rural areas within the same county.
+
+## What Could Be Done
+
+**Help struggling regions:** Northern Michigan and the Upper Peninsula need more economic development support since they have lower incomes and higher poverty than other parts of the state.
+
+**Continue fighting poverty:** Even though poverty went down, 12% is still too high. Programs that help people get jobs, job training, and financial assistance should continue.
+
+**Keep housing affordable:** In expensive areas like Southeast Michigan, it's getting harder for people to afford rent. Building more housing could help keep costs reasonable.
+
+**Watch out for inflation:** The last few years showed how rising prices can make people feel worse off even when their paychecks are larger. This is something to keep monitoring.
+
+### References
+
+https://davidgohel.github.io/flextable/reference/set_header_labels.html
+
+https://stringr.tidyverse.org/reference/str_c.html
+
+https://stringr.tidyverse.org/reference/case.html
+
+https://posit.cloud/learn/recipes/datetime/DatetimeA3
+
+https://github.com/rstudio/cheatsheets/blob/main/strings.pdf
+
+https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/character
+
+https://stackoverflow.com/questions/50268390/regular-expression-in-str-detect
+
+Copilot Editor (debug permutation test)
